@@ -4,7 +4,7 @@
 
 # Configuration - Update these before deploying
 $GitHubRepo = "StephenShawBepoz/bepoz-deployment-tools"  # e.g., "johndoe/bepoz-tools"
-$GitHubToken = "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"  # Your GitHub Personal Access Token
+$GitHubToken = "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"  # Your GitHub Personal Access Token
 $MainScriptPath = "BepozDeploymentToolbox.ps1"  # Path to main script in repo
 
 # Working directory
