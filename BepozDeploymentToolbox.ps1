@@ -8,7 +8,7 @@ Add-Type -AssemblyName System.Drawing
 # Configuration
 $Script:Config = @{
     GitHubRepo = "StephenShawBepoz/bepoz-deployment-tools"  # Update this
-    GitHubToken = "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"  # Update this with your Personal Access Token
+    GitHubToken = "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"  # Update this with your Personal Access Token
     WorkingDirectory = "C:\Temp\BepozDeployment"
     LogDirectory = "C:\Temp\BepozDeployment\Logs"
     ManifestFile = "deployment-manifest.json"
