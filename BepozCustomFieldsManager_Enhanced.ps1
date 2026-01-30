@@ -708,6 +708,224 @@ WHERE CustomTableID = @TableID
     }
 }
 
+function Test-CustomFieldInUse {
+    <#
+    .SYNOPSIS
+        Checks how many records in the target table are currently using this custom field
+    .DESCRIPTION
+        Queries the table to count non-default values in the specified custom field column.
+        Returns both count and sample records for preview.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ConnectionString,
+        
+        [Parameter(Mandatory)]
+        [int]$TableID,
+        
+        [Parameter(Mandatory)]
+        [int]$FieldType,
+        
+        [Parameter(Mandatory)]
+        [int]$FieldNum
+    )
+    
+    try {
+        # Map TableID to table name and primary key
+        $tableInfo = switch ($TableID) {
+            0 { @{ TableName = 'dbo.Account'; PK = 'AccountID' } }
+            1 { @{ TableName = 'dbo.Product'; PK = 'ProductID' } }
+            2 { @{ TableName = 'dbo.Operator'; PK = 'OperatorID' } }
+            3 { @{ TableName = 'dbo.Supplier'; PK = 'SupplierID' } }
+            5 { @{ TableName = 'dbo.Store'; PK = 'StoreID' } }
+            7 { @{ TableName = 'dbo.Venue'; PK = 'VenueID' } }
+            8 { @{ TableName = 'dbo.Workstation'; PK = 'WorkstationID' } }
+            default { throw "Unknown TableID: $TableID" }
+        }
+        
+        # Map FieldType to column name prefix
+        $columnPrefix = switch ($FieldType) {
+            0 { 'CustomFlag' }
+            1 { 'CustomDate' }
+            2 { 'CustomNum' }
+            3 { 'CustomText' }
+            default { throw "Unknown FieldType: $FieldType" }
+        }
+        
+        $columnName = "${columnPrefix}_${FieldNum}"
+        
+        # Build WHERE clause based on field type (check for non-default values)
+        $whereClause = switch ($FieldType) {
+            0 { "$columnName = 1" }              # Flag: check for TRUE
+            1 { "$columnName IS NOT NULL" }      # Date: check for non-null
+            2 { "$columnName <> 0" }             # Number: check for non-zero
+            3 { "$columnName <> ''" }            # Text: check for non-empty
+        }
+        
+        # Count query
+        $countQuery = @"
+SELECT COUNT(*) AS RecordCount
+FROM $($tableInfo.TableName)
+WHERE $whereClause
+"@
+        
+        $countResult = Invoke-BepozQuery -ConnectionString $ConnectionString -Query $countQuery
+        $recordCount = [int]$countResult.Rows[0]['RecordCount']
+        
+        # Sample query (top 100 records)
+        $sampleQuery = @"
+SELECT TOP 100 
+    $($tableInfo.PK),
+    Name,
+    $columnName
+FROM $($tableInfo.TableName)
+WHERE $whereClause
+ORDER BY $($tableInfo.PK)
+"@
+        
+        $sampleResult = Invoke-BepozQuery -ConnectionString $ConnectionString -Query $sampleQuery
+        
+        return @{
+            Count = $recordCount
+            TableName = $tableInfo.TableName
+            PrimaryKey = $tableInfo.PK
+            ColumnName = $columnName
+            SampleRecords = $sampleResult
+        }
+    }
+    catch {
+        Write-Host "  ERROR checking field usage: $($_.Exception.Message)" -ForegroundColor Red
+        return @{
+            Count = -1
+            TableName = ''
+            PrimaryKey = ''
+            ColumnName = ''
+            SampleRecords = $null
+        }
+    }
+}
+
+function Show-CustomFieldUsageDialog {
+    <#
+    .SYNOPSIS
+        Displays a dialog showing which records are using the custom field
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$UsageInfo,
+        
+        [Parameter(Mandatory)]
+        [string]$FieldName,
+        
+        [Parameter(Mandatory)]
+        [string]$Action  # "Update" or "Delete"
+    )
+    
+    $dialogForm = New-Object System.Windows.Forms.Form
+    $dialogForm.Text = "Custom Field Usage - $Action Confirmation"
+    $dialogForm.Size = New-Object System.Drawing.Size(800, 600)
+    $dialogForm.StartPosition = 'CenterParent'
+    $dialogForm.FormBorderStyle = 'FixedDialog'
+    $dialogForm.MaximizeBox = $false
+    $dialogForm.MinimizeBox = $false
+    
+    $yPos = 20
+    
+    # Warning header
+    $lblWarning = New-Object System.Windows.Forms.Label
+    $lblWarning.Location = New-Object System.Drawing.Point(20, $yPos)
+    $lblWarning.Size = New-Object System.Drawing.Size(750, 40)
+    $lblWarning.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    $lblWarning.ForeColor = [System.Drawing.Color]::DarkRed
+    
+    if ($UsageInfo.Count -eq 0) {
+        $lblWarning.Text = "This field is NOT currently in use by any records.`nIt is safe to $Action."
+        $lblWarning.ForeColor = [System.Drawing.Color]::DarkGreen
+    }
+    else {
+        $lblWarning.Text = "WARNING: This field is currently in use!`n$($UsageInfo.Count) record(s) have data in this field."
+    }
+    
+    $dialogForm.Controls.Add($lblWarning)
+    
+    $yPos += 50
+    
+    # Field info
+    $lblInfo = New-Object System.Windows.Forms.Label
+    $lblInfo.Location = New-Object System.Drawing.Point(20, $yPos)
+    $lblInfo.Size = New-Object System.Drawing.Size(750, 60)
+    $lblInfo.Text = "Field Name: $FieldName`n" +
+                    "Table: $($UsageInfo.TableName)`n" +
+                    "Column: $($UsageInfo.ColumnName)"
+    $lblInfo.Font = New-Object System.Drawing.Font('Consolas', 9)
+    $dialogForm.Controls.Add($lblInfo)
+    
+    $yPos += 70
+    
+    # DataGridView showing affected records
+    if ($UsageInfo.Count -gt 0 -and $UsageInfo.SampleRecords -and $UsageInfo.SampleRecords.Rows.Count -gt 0) {
+        $lblRecords = New-Object System.Windows.Forms.Label
+        $lblRecords.Location = New-Object System.Drawing.Point(20, $yPos)
+        $lblRecords.Size = New-Object System.Drawing.Size(750, 20)
+        $lblRecords.Text = "Affected Records (showing first 100):"
+        $lblRecords.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+        $dialogForm.Controls.Add($lblRecords)
+        
+        $yPos += 25
+        
+        $dgv = New-Object System.Windows.Forms.DataGridView
+        $dgv.Location = New-Object System.Drawing.Point(20, $yPos)
+        $dgv.Size = New-Object System.Drawing.Size(750, 320)
+        $dgv.DataSource = $UsageInfo.SampleRecords
+        $dgv.ReadOnly = $true
+        $dgv.AllowUserToAddRows = $false
+        $dgv.AllowUserToDeleteRows = $false
+        $dgv.SelectionMode = 'FullRowSelect'
+        $dgv.AutoSizeColumnsMode = 'AllCells'
+        $dgv.RowHeadersVisible = $false
+        $dialogForm.Controls.Add($dgv)
+        
+        $yPos += 330
+    }
+    else {
+        $lblNoData = New-Object System.Windows.Forms.Label
+        $lblNoData.Location = New-Object System.Drawing.Point(20, $yPos)
+        $lblNoData.Size = New-Object System.Drawing.Size(750, 40)
+        $lblNoData.Text = "No records are using this field.`nAll values are at their defaults (FALSE for flags, NULL for dates, 0 for numbers, empty for text)."
+        $lblNoData.ForeColor = [System.Drawing.Color]::DarkGreen
+        $dialogForm.Controls.Add($lblNoData)
+        
+        $yPos += 50
+    }
+    
+    # Action buttons
+    $btnProceed = New-Object System.Windows.Forms.Button
+    $btnProceed.Location = New-Object System.Drawing.Point(520, $yPos)
+    $btnProceed.Size = New-Object System.Drawing.Size(120, 35)
+    $btnProceed.Text = "Proceed with $Action"
+    $btnProceed.DialogResult = 'Yes'
+    $btnProceed.BackColor = if ($UsageInfo.Count -eq 0) { [System.Drawing.Color]::FromArgb(0, 120, 215) } else { [System.Drawing.Color]::FromArgb(200, 50, 50) }
+    $btnProceed.ForeColor = [System.Drawing.Color]::White
+    $btnProceed.FlatStyle = 'Flat'
+    $dialogForm.Controls.Add($btnProceed)
+    
+    $btnCancel = New-Object System.Windows.Forms.Button
+    $btnCancel.Location = New-Object System.Drawing.Point(650, $yPos)
+    $btnCancel.Size = New-Object System.Drawing.Size(120, 35)
+    $btnCancel.Text = 'Cancel'
+    $btnCancel.DialogResult = 'No'
+    $dialogForm.Controls.Add($btnCancel)
+    
+    $dialogForm.AcceptButton = $btnProceed
+    $dialogForm.CancelButton = $btnCancel
+    
+    $result = $dialogForm.ShowDialog()
+    
+    return ($result -eq 'Yes')
+}
+
 #endregion
 
 #region Table-Specific Functions
@@ -1310,6 +1528,36 @@ ORDER BY CustomFieldType, CustomFieldNum
             $fieldNum = [int]$selectedRow.Cells['FieldNum'].Value
             $newName = $txtFNName.Text.Trim()
             
+            # Safety check: Check if field is in use before updating
+            $statusLabel.Text = 'Checking field usage...'
+            $form.Refresh()
+            
+            $usageInfo = Test-CustomFieldInUse `
+                -ConnectionString $ConnectionString `
+                -TableID $tableID `
+                -FieldType $typeID `
+                -FieldNum $fieldNum
+            
+            if ($usageInfo.Count -eq -1) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Error checking field usage. See console for details.",
+                    'Error',
+                    'OK',
+                    'Error'
+                )
+                $statusLabel.Text = 'Error checking field usage'
+                return
+            }
+            
+            # Show usage dialog and get confirmation
+            $currentName = $selectedRow.Cells['FieldName'].Value
+            $proceed = Show-CustomFieldUsageDialog -UsageInfo $usageInfo -FieldName $currentName -Action "Update"
+            
+            if (-not $proceed) {
+                $statusLabel.Text = 'Update cancelled by user'
+                return
+            }
+            
             $statusLabel.Text = 'Updating field definition...'
             $form.Refresh()
             
@@ -1365,20 +1613,32 @@ ORDER BY CustomFieldType, CustomFieldNum
             $fieldNum = [int]$selectedRow.Cells['FieldNum'].Value
             $fieldName = $selectedRow.Cells['FriendlyName'].Value
             
-            $confirmMsg = "Are you sure you want to delete this field definition?`n`n" +
-                         "Table: $($cmbFNTable.SelectedItem)`n" +
-                         "Field: $($selectedRow.Cells['TechnicalName'].Value)`n" +
-                         "Name: $fieldName`n`n" +
-                         "Note: This only deletes the friendly name, not the actual data."
+            # Safety check: Check if field is in use before deleting
+            $statusLabel.Text = 'Checking field usage...'
+            $form.Refresh()
             
-            $result = [System.Windows.Forms.MessageBox]::Show(
-                $confirmMsg,
-                'Confirm Delete',
-                'YesNo',
-                'Warning'
-            )
+            $usageInfo = Test-CustomFieldInUse `
+                -ConnectionString $ConnectionString `
+                -TableID $tableID `
+                -FieldType $typeID `
+                -FieldNum $fieldNum
             
-            if ($result -ne 'Yes') {
+            if ($usageInfo.Count -eq -1) {
+                [System.Windows.Forms.MessageBox]::Show(
+                    "Error checking field usage. See console for details.",
+                    'Error',
+                    'OK',
+                    'Error'
+                )
+                $statusLabel.Text = 'Error checking field usage'
+                return
+            }
+            
+            # Show usage dialog and get confirmation
+            $proceed = Show-CustomFieldUsageDialog -UsageInfo $usageInfo -FieldName $fieldName -Action "Delete"
+            
+            if (-not $proceed) {
+                $statusLabel.Text = 'Delete cancelled by user'
                 return
             }
             
